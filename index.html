@@ -64,7 +64,7 @@ const ROUNDS = [
   /* 1 */ { window0: 1.75, windowStep: 0.07, windowMin: 1.05, run: 0.60, flee: 520, gap: [0.5, 1.3], twoDoorsAfter: 4,
             mapping: 'home', cheeseChance: 0, catChance: 0, doubleChance: 0, intro: [] },
   /* 2 */ { ...FAST, mapping: 'home', cheeseChance: 0.28, catChance: 0, doubleChance: 0,
-            intro: [['The mice are faster now!', '#ffe9c7'], ['Some doors hide CHEESE. Leave those OPEN to win it back.', '#ffd95e']] },
+            intro: [['The mice are faster now!', '#ffe9c7'], ['Some doors hide CHEESE. GRAB it with that door\'s key!', '#ffd95e']] },
   /* 3 */ { ...FAST, mapping: 'home', cheeseChance: 0.28, catChance: 0.18, doubleChance: 0,
             intro: [['Look out for the CAT!', '#ff8a8a'], ['Slam its door, or it eats ALL your cheese.', '#ffe9c7']] },
   /* 4 */ { ...FAST, mapping: 'swap', newMapping: true, cheeseChance: 0.28, catChance: 0.18, doubleChance: 0,
@@ -74,7 +74,7 @@ const ROUNDS = [
   /* 6 */ { ...FAST, mapping: 'mirror', newMapping: true, cheeseChance: 0.25, catChance: 0.15, doubleChance: 0.2,
             intro: [['The keys are MIRRORED!', '#8fd3ff'], ['; works the first door, A works the last.', '#ffe9c7']] },
   /* 7 */ { ...FAST, mapping: 'mirror', gap: [0.3, 0.9], cheeseChance: 0.75, catChance: 0, doubleChance: 0,
-            intro: [['CHEESE BONANZA!', '#ffd95e'], ['Leave the cheese doors open and stock up for Round 8.', '#ffe9c7']] },
+            intro: [['CHEESE BONANZA!', '#ffd95e'], ['Grab every wedge you can and stock up for Round 8.', '#ffe9c7']] },
   /* 8 */ { ...FAST, mapping: 'random', newMapping: true, endless: true, windowMin: 0.70, cheeseChance: 0.25, catChance: 0.15, doubleChance: 0.2,
             intro: [['FINAL ROUND: the keys are SCRAMBLED!', '#ff8a8a'], ['It never ends. Hold on to your cheese as long as you can.', '#ffe9c7']] },
 ];
@@ -252,12 +252,11 @@ function armReached(i) {
     for (let k = 0; k < 14; k++) particles.push({ x: d.x + rand(-30,30), y: rand(DOOR_TOP, DOOR_BOTTOM), vx: rand(-150,150), vy: rand(-180,-20), t: 0, life: rand(0.4,0.8), color: '#ffb36b', r: rand(2,4) });
     sfx.slam(); sfx.hiss();
   } else if (m && m.kind === 'cheese') {
-    // Slammed a cheese door: the cheese is lost and the octopus gets tangled
-    m.state = 'caught'; m.t = 0;
-    d.target = 0; d.slam = true; d.shake = 0.25;
-    arm.stun = STUN_TIME;
-    floaters.push({ x: d.x, y: DOOR_TOP - 10, text: 'cheese lost!', t: 0, color: '#ff8a65' });
-    sfx.slam(); sfx.whiff();
+    // Grabbed the cheese: the arm carries it back to the pile, and the door swings shut behind it
+    m.state = 'carried';
+    arm.carry = m;
+    d.closeDelay = 0.15;
+    sfx.type();
   } else if (m) {
     catchMouse(m, d);
     if (m.kind === 'double') {
@@ -298,8 +297,7 @@ function trySpawn() {
     mice.push({ kind: 'cat', door: i, state: 'peek', timer: c.catWindow, window: c.catWindow, t: 0 });
     sfx.creak(); setTimeout(sfx.meow, 120);
   } else if (kind === 'cheese') {
-    const cw = win * 1.25;
-    mice.push({ kind: 'cheese', door: i, state: 'peek', timer: cw, window: cw, t: 0 });
+    mice.push({ kind: 'cheese', door: i, state: 'peek', timer: win, window: win, t: 0 });
     sfx.creak(); setTimeout(sfx.twinkle, 120);
   } else {
     mice.push({ kind, door: i, state: 'peek', timer: win, window: win, t: 0, x: DOOR_X[i], y: DOOR_BOTTOM - 30, hasCheese: false, dir: 1 });
@@ -309,6 +307,21 @@ function trySpawn() {
   }
   doors[i].busy = true; doors[i].target = 1; doors[i].slam = false;
   return true;
+}
+
+function depositCheese(m) {
+  m.dead = true;
+  if (game.ending === 'lose') return;
+  const top = WEDGES[Math.min(game.cheese, MAX_CHEESE - 1)];
+  if (game.cheese < MAX_CHEESE) {
+    game.cheese++;
+    floaters.push({ x: top.x, y: top.y - 10, text: '+1 cheese', t: 0, color: '#8cff9a' });
+  } else {
+    game.score += 50;
+    floaters.push({ x: top.x, y: top.y - 10, text: 'pile full! +50', t: 0, color: '#ffe066' });
+  }
+  for (let k = 0; k < 12; k++) particles.push({ x: top.x, y: top.y, vx: rand(-140,140), vy: rand(-200,-40), t: 0, life: rand(0.4,0.8), color: '#fff3b0', r: rand(2,4) });
+  sfx.gain();
 }
 
 function startRun(m, d) {
@@ -350,7 +363,10 @@ function update(dt) {
     if (a.stun > 0) a.stun -= dt;
     if (a.phase === 'out') { a.ext += dt / 0.09; if (a.ext >= 1) { a.ext = 1; a.phase = 'hold'; a.hold = 0.07; armReached(i); } }
     else if (a.phase === 'hold') { a.hold -= dt; if (a.hold <= 0) a.phase = 'back'; }
-    else if (a.phase === 'back') { a.ext -= dt / 0.2; if (a.ext <= 0) { a.ext = 0; a.phase = 'idle'; } }
+    else if (a.phase === 'back') {
+      a.ext -= dt / (a.carry ? 0.32 : 0.2);   // a little slower when hauling cheese
+      if (a.ext <= 0) { a.ext = 0; a.phase = 'idle'; if (a.carry) { depositCheese(a.carry); a.carry = null; } }
+    }
   });
 
   // doors
@@ -380,12 +396,11 @@ function update(dt) {
         game.ending = 'lose'; game.endT = 2.2; game.loseReason = 'cat';
         sfx.meow();
       } else if (m.kind === 'cheese') {
-        // Left open: the cheese flies onto the pile
-        const slot = Math.min(MAX_CHEESE - 1, game.cheese + mice.filter(o => o.state === 'fly').length);
-        m.state = 'fly'; m.t = 0;
-        m.sx = d.x; m.sy = DOOR_BOTTOM - 50; m.tx = WEDGES[slot].x; m.ty = WEDGES[slot].y;
-        m.x = m.sx; m.y = m.sy;
-        d.closeDelay = 0.3;
+        // Not grabbed in time: the door closes and the cheese is gone
+        m.dead = true;
+        d.target = 0;
+        floaters.push({ x: d.x, y: DOOR_TOP - 10, text: 'missed it', t: 0, color: '#c9b8ff' });
+        sfx.creak();
       } else {
         // Too slow: the mouse (and its twin, if it's a double) runs for the cheese
         if (m.kind === 'double') born.push(burstFor(d, m.door, 0.12));
@@ -412,24 +427,6 @@ function update(dt) {
       }
     } else if (m.state === 'sit') {
       m.y = lerp(m.y, PILE_FLOOR - 60, Math.min(1, dt*6));
-    } else if (m.state === 'fly') {
-      m.t += dt / 0.7;
-      const k = Math.min(1, m.t);
-      m.x = lerp(m.sx, m.tx, ease(k)); m.y = lerp(m.sy, m.ty, k) - Math.sin(k*Math.PI)*110;
-      if (m.t >= 1) {
-        m.dead = true;
-        if (game.ending !== 'lose') {
-          if (game.cheese < MAX_CHEESE) {
-            game.cheese++;
-            floaters.push({ x: m.tx, y: m.ty - 10, text: '+1 cheese', t: 0, color: '#8cff9a' });
-          } else {
-            game.score += 50;
-            floaters.push({ x: m.tx, y: m.ty - 10, text: 'pile full! +50', t: 0, color: '#ffe066' });
-          }
-          for (let k2 = 0; k2 < 12; k2++) particles.push({ x: m.tx, y: m.ty, vx: rand(-140,140), vy: rand(-200,-40), t: 0, life: rand(0.4,0.8), color: '#fff3b0', r: rand(2,4) });
-          sfx.gain();
-        }
-      }
     } else if (m.state === 'run') {
       m.t += dt / cfg().run;
       const k = Math.min(1, m.t);
@@ -710,6 +707,34 @@ function tentacle(ax, ay, cx, cy, tx, ty, w, color, dark, stunned) {
   }
 }
 
+// Where arm i is right now: its root on the body, its bend, and its tip (resting near the pile, or at the door)
+function armGeom(i) {
+  const cx = PILE_X, cy = octoY, a = arms[i];
+  const side = i < 4 ? -1 : 1;
+  const ax = cx + (i - 3.5) * 13, ay = cy + 26;
+  const rank = i < 4 ? 3 - i : i - 4; // 0 = innermost
+  const wig = Math.sin(game.time*2.2 + i*1.3);
+  const rx = cx + side * (62 + rank*34), ry = cy + 44 + rank*10 + wig*5;
+  const rcx = (ax + rx)/2 + side*10, rcy = Math.max(ay, ry) + 22 + wig*4;
+  const ex = DOOR_X[i], ey = DOOR_BOTTOM - 58;
+  const ecx = (ax + ex)/2 + side*(30 + rank*10), ecy = (ay + ey)/2 + 60;
+  const e = ease(a.ext);
+  return { ax, ay, cx: lerp(rcx, ecx, e), cy: lerp(rcy, ecy, e), tx: lerp(rx, ex, e), ty: lerp(ry, ey, e) };
+}
+
+function drawCarriedCheese() {
+  arms.forEach((a, i) => {
+    if (!a.carry) return;
+    const g = armGeom(i);
+    // wedge held in the curl of the arm tip
+    drawWedge(g.tx, g.ty - 18, 52, 26);
+    ctx.strokeStyle = '#5d2f86'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(g.tx, g.ty - 4, 11, Math.PI*0.9, Math.PI*2.1); ctx.stroke();
+    ctx.strokeStyle = '#b670e8'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(g.tx, g.ty - 4, 11, Math.PI*0.9, Math.PI*2.1); ctx.stroke();
+  });
+}
+
 function drawOctopus() {
   const cx = PILE_X, cy = octoY;
   // which door to look at
@@ -720,24 +745,15 @@ function drawOctopus() {
   // arms (arm i always belongs to door i)
   const order = [0,7,1,6,2,5,3,4]; // draw outer arms first
   for (const i of order) {
-    const a = arms[i];
-    const side = i < 4 ? -1 : 1;
-    const ax = cx + (i - 3.5) * 13, ay = cy + 26;
-    const rank = i < 4 ? 3 - i : i - 4; // 0 = innermost
-    const wig = Math.sin(game.time*2.2 + i*1.3);
-    const rx = cx + side * (62 + rank*34), ry = cy + 44 + rank*10 + wig*5;
-    const rcx = (ax + rx)/2 + side*10, rcy = Math.max(ay, ry) + 22 + wig*4;
-    const ex = DOOR_X[i], ey = DOOR_BOTTOM - 58;
-    const ecx = (ax + ex)/2 + side*(30 + rank*10), ecy = (ay + ey)/2 + 60;
-    const e = ease(a.ext);
+    const a = arms[i], g = armGeom(i);
     const stunned = a.stun > 0;
     const color = stunned ? '#8f5fb8' : (keyDown[game.keyForDoor[i]] ? '#d48cff' : '#b670e8');
-    tentacle(ax, ay, lerp(rcx, ecx, e), lerp(rcy, ecy, e), lerp(rx, ex, e), lerp(ry, ey, e), 13, color, '#5d2f86', stunned && a.ext === 0);
+    tentacle(g.ax, g.ay, g.cx, g.cy, g.tx, g.ty, 13, color, '#5d2f86', stunned && a.ext === 0);
     if (stunned && a.ext === 0) {
       for (let s = 0; s < 3; s++) {
         const ang = game.time*6 + s*2.1;
         ctx.fillStyle = '#ffe066';
-        star(rx + Math.cos(ang)*14, ry - 14 + Math.sin(ang)*5, 4);
+        star(g.tx + Math.cos(ang)*14, g.ty - 14 + Math.sin(ang)*5, 4);
       }
     }
   }
@@ -901,7 +917,7 @@ function draw() {
   drawPile();
   drawOctopus();
   for (const m of mice) if (m.state === 'run' || m.state === 'flee') drawMouseSide(m.x, m.y, m.dir, m.hasCheese);
-  for (const m of mice) if (m.state === 'fly') drawWedge(m.x, m.y, WEDGE_W, WEDGE_H);
+  drawCarriedCheese();
   for (const m of mice) if (m.state === 'pounce' || m.state === 'sit') drawCatFront(m.x, m.y, m.s, 1, m.state, 1);
   for (const p of particles) { ctx.globalAlpha = 1 - p.t/p.life; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill(); }
   ctx.globalAlpha = 1;

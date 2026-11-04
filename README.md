@@ -24,12 +24,12 @@ A  S  D  F        J  K  L  ;
 | Round | Keys → doors (left to right) | What's new |
 |---|---|---|
 | 1 | `A S D F  J K L ;` | Mice only. |
-| 2 | `A S D F  J K L ;` | Faster mice. Some doors hide **cheese**: leave them **open** and the wedge joins your pile (+50 points if it's full). Slam one and the cheese is lost. |
+| 2 | `A S D F  J K L ;` | Faster mice. Some doors hide **cheese**: press that door's key in time and the arm **grabs** it and brings it back to your pile (+50 points if it's full). Wait too long and the door closes on it. |
 | 3 | `A S D F  J K L ;` | Some doors hide a **cat**. Slam it (+200). If you don't, it eats **all** your cheese. The cat waits long enough that you can recover from one wrong key. |
 | 4 | `J K L ;  A S D F` | Your hands swap sides. |
 | 5 | `J K L ;  A S D F` | **Double mice** (marked ×2). Slam the door and the second mouse bursts right back out. You can't stop it. Miss, and both steal cheese. |
 | 6 | `; L K J  F D S A` | The keys are mirrored. |
-| 7 | `; L K J  F D S A` | **Cheese bonanza**: only mice and cheese, about 3 cheese doors for every mouse. Stock up! |
+| 7 | `; L K J  F D S A` | **Cheese bonanza**: only mice and cheese, about 3 cheese doors for every mouse. Grab them to stock up! |
 | 8 | Scrambled, new every time | Mice, double mice, cheese and cats. **Endless.** It only ends when your cheese runs out. |
 
 ## High scores
