@@ -21,26 +21,85 @@ const W = 1000, H = 600;
 // ---------- Layout ----------
 const KEYS   = ['KeyA','KeyS','KeyD','KeyF','KeyJ','KeyK','KeyL','Semicolon'];
 const LABELS = ['A','S','D','F','J','K','L',';'];
-// Round 1: doors line up with the home-row keys (gap in the middle like the keyboard)
+// Doors sit in a row with a gap in the middle, like the two hands on the home row
 const DOOR_X = [110, 210, 310, 410, 590, 690, 790, 890];
 const DOOR_W = 74, DOOR_H = 126, DOOR_BOTTOM = 250, DOOR_TOP = DOOR_BOTTOM - DOOR_H;
 const PILE_X = 500, PILE_FLOOR = 588, WEDGE_W = 70, WEDGE_H = 30;
-// 8 wedges: bottom row 4, middle 3, top 1 (removed top-down)
-const WEDGES = [
-  [-105,0],[-35,0],[35,0],[105,0],
-  [-70,1],[0,1],[70,1],
-  [0,2]
-].map(([dx,row]) => ({ x: PILE_X + dx, y: PILE_FLOOR - (row+1)*WEDGE_H, row }));
+// Cheese pile: up to 15 wedges in rows of 5-4-3-2-1. Filled bottom-up, centre-out; eaten from the top down.
+const WEDGES = [];
+[5, 4, 3, 2, 1].forEach((n, row) => {
+  const xs = [...Array(n).keys()].map(k => (k - (n - 1) / 2) * WEDGE_W);
+  xs.sort((a, b) => Math.abs(a) - Math.abs(b) || a - b);
+  xs.forEach(dx => WEDGES.push({ x: PILE_X + dx, y: PILE_FLOOR - (row + 1) * WEDGE_H, row }));
+});
+const MAX_CHEESE = WEDGES.length;
+const START_CHEESE = 8;
 
 const MICE_TO_WIN = 8;
 const STUN_TIME = 0.9;
 
-// Per-round tuning. window = seconds a mouse waits in the door before bolting.
+// Key-to-door mappings: MAPS[name][door] = index into KEYS
+const MAPS = {
+  home:   [0, 1, 2, 3, 4, 5, 6, 7],   // A S D F | J K L ;
+  swap:   [4, 5, 6, 7, 0, 1, 2, 3],   // J K L ; | A S D F  (hands swapped)
+  mirror: [7, 6, 5, 4, 3, 2, 1, 0],   // ; L K J | F D S A  (mirrored)
+};
+function randomMap() {
+  const known = Object.values(MAPS).map(m => m.join());
+  let m;
+  do {
+    m = [0, 1, 2, 3, 4, 5, 6, 7];
+    for (let i = m.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [m[i], m[j]] = [m[j], m[i]]; }
+  } while (known.includes(m.join()));
+  return m;
+}
+
+// Per-round tuning.
+//   window      = seconds a mouse waits in the door before bolting
+//   catWindow   = seconds before a cat pounces (long enough to miss once, untangle, and still slam it)
+//   twoDoorsAfter = after this many mice, two doors can be open at once
+//   *Chance     = what's behind each door (whatever's left over is a single mouse)
+const FAST = { window0: 1.30, windowStep: 0.06, windowMin: 0.80, run: 0.42, flee: 680, gap: [0.4, 1.1], twoDoorsAfter: 3, catWindow: 2.6 };
 const ROUNDS = [
-  { window0: 1.75, windowStep: 0.07, windowMin: 1.05, run: 0.60, flee: 520, gap: [0.5, 1.3], doubleAfter: 4, cheeseChance: 0 },
-  { window0: 1.30, windowStep: 0.06, windowMin: 0.80, run: 0.42, flee: 680, gap: [0.4, 1.1], doubleAfter: 3, cheeseChance: 0.28 },
+  /* 1 */ { window0: 1.75, windowStep: 0.07, windowMin: 1.05, run: 0.60, flee: 520, gap: [0.5, 1.3], twoDoorsAfter: 4,
+            mapping: 'home', cheeseChance: 0, catChance: 0, doubleChance: 0, intro: [] },
+  /* 2 */ { ...FAST, mapping: 'home', cheeseChance: 0.28, catChance: 0, doubleChance: 0,
+            intro: [['The mice are faster now!', '#ffe9c7'], ['Some doors hide CHEESE. Leave those OPEN to win it back.', '#ffd95e']] },
+  /* 3 */ { ...FAST, mapping: 'home', cheeseChance: 0.28, catChance: 0.18, doubleChance: 0,
+            intro: [['Look out for the CAT!', '#ff8a8a'], ['Slam its door, or it eats ALL your cheese.', '#ffe9c7']] },
+  /* 4 */ { ...FAST, mapping: 'swap', newMapping: true, cheeseChance: 0.28, catChance: 0.18, doubleChance: 0,
+            intro: [['Your hands have SWAPPED sides!', '#8fd3ff'], ['J K L ; now work the left doors, A S D F the right.', '#ffe9c7']] },
+  /* 5 */ { ...FAST, mapping: 'swap', cheeseChance: 0.25, catChance: 0.15, doubleChance: 0.2,
+            intro: [['Watch for DOUBLE mice!', '#ffb36b'], ['Slam the door and the second one bursts right back out.', '#ffe9c7']] },
+  /* 6 */ { ...FAST, mapping: 'mirror', newMapping: true, cheeseChance: 0.25, catChance: 0.15, doubleChance: 0.2,
+            intro: [['The keys are MIRRORED!', '#8fd3ff'], ['; works the first door, A works the last.', '#ffe9c7']] },
+  /* 7 */ { ...FAST, mapping: 'mirror', gap: [0.3, 0.9], cheeseChance: 0.75, catChance: 0, doubleChance: 0,
+            intro: [['CHEESE BONANZA!', '#ffd95e'], ['Leave the cheese doors open and stock up for Round 8.', '#ffe9c7']] },
+  /* 8 */ { ...FAST, mapping: 'random', newMapping: true, endless: true, windowMin: 0.70, cheeseChance: 0.25, catChance: 0.15, doubleChance: 0.2,
+            intro: [['FINAL ROUND: the keys are SCRAMBLED!', '#ff8a8a'], ['It never ends. Hold on to your cheese as long as you can.', '#ffe9c7']] },
 ];
 const cfg = () => ROUNDS[game.round];
+
+// ---------- High scores (stored in this browser only) ----------
+const HS_KEY = 'nachoCheese.highScores.v1';
+function loadScores() {
+  try { const s = JSON.parse(localStorage.getItem(HS_KEY)); return Array.isArray(s) ? s : []; } catch (e) { return []; }
+}
+function saveScores(list) { try { localStorage.setItem(HS_KEY, JSON.stringify(list)); } catch (e) {} }
+function qualifies(score) {
+  if (score <= 0) return false;
+  const list = loadScores();
+  return list.length < 10 || score > list[list.length - 1].score;
+}
+function addScore(initials, score, round) {
+  const entry = { initials, score, round, ts: Date.now() };
+  const list = loadScores();
+  list.push(entry);
+  list.sort((a, b) => b.score - a.score || a.ts - b.ts);
+  const top = list.slice(0, 10);
+  saveScores(top);
+  return top.indexOf(entry);
+}
 
 // ---------- Audio ----------
 let actx = null;
@@ -65,25 +124,47 @@ const sfx = {
   lose:   () => [392,330,262,196].forEach((f,i)=>beep(f, 0.28, 'triangle', 0.08, null, i*0.18)),
   go:     () => beep(880, 0.15, 'square', 0.05),
   twinkle:() => [1319,1568,2093].forEach((f,i)=>beep(f, 0.09, 'triangle', 0.05, null, i*0.06)),
+  meow:   () => { beep(520, 0.12, 'sawtooth', 0.05, 820); beep(820, 0.3, 'sawtooth', 0.05, 440, 0.12); },
+  hiss:   () => beep(3000, 0.25, 'sawtooth', 0.03, 1500, 0.05),
+  chomp:  () => [0, 0.14, 0.28].forEach(d => beep(110, 0.1, 'square', 0.12, 60, d)),
   gain:   () => [659,880,1175].forEach((f,i)=>beep(f, 0.12, 'square', 0.05, null, i*0.07)),
+  bang:   () => { beep(70, 0.12, 'square', 0.1, 50); beep(2000, 0.05, 'square', 0.04, 2600, 0.05); },
+  type:   () => beep(1200, 0.04, 'square', 0.03),
+  fanfare:() => [523,659,784,1047,784,1047].forEach((f,i)=>beep(f, 0.16, 'square', 0.06, null, i*0.1)),
 };
 
 // ---------- State ----------
 let game, doors, arms, mice, floaters, particles;
 const keyDown = new Array(8).fill(false);
 
+function setMapping(map) {
+  game.keyForDoor = map.slice();
+  game.doorForKey = [];
+  map.forEach((k, door) => { game.doorForKey[k] = door; });
+}
+
 function reset() {
-  game = { state: 'title', round: 0, score: 0, caught: 0, cheese: 8, spawned: 0, spawnTimer: 0, readyT: 0, endT: 0, ending: null, time: 0, startScore: 0, startCheese: 8 };
+  game = { state: 'title', round: 0, score: 0, caught: 0, cheese: START_CHEESE, spawned: 0, spawnTimer: 0, readyT: 0, endT: 0,
+           ending: null, time: 0, practice: false, loseReason: null, initials: '', highlight: -1 };
+  setMapping(MAPS.home);
   doors = DOOR_X.map(x => ({ x, open: 0, target: 0, busy: false, closeDelay: 0, shake: 0 }));
   arms = DOOR_X.map(() => ({ ext: 0, phase: 'idle', hold: 0, stun: 0, target: null }));
   mice = []; floaters = []; particles = [];
 }
 reset();
 
-// Score and cheese carry over between rounds; a retry restarts the round with what you had at its start.
-function startRound(round, score, cheese) {
+// Score and cheese carry over between rounds. Losing any round ends the game.
+function startRound(round, score, cheese, practice) {
   reset();
-  Object.assign(game, { state: 'ready', round, score, cheese, startScore: score, startCheese: cheese, readyT: round > 0 ? 2.8 : 1.6 });
+  const c = ROUNDS[round];
+  Object.assign(game, { state: 'ready', round, score, cheese, practice: !!practice,
+                        readyT: round === 0 ? 1.6 : (c.newMapping ? 3.6 : 2.8) });
+  setMapping(c.mapping === 'random' ? randomMap() : MAPS[c.mapping]);
+}
+
+function endGame() {
+  if (!game.practice && qualifies(game.score)) { game.state = 'initials'; game.initials = ''; sfx.fanfare(); }
+  else { game.state = 'scores'; game.highlight = -1; }
 }
 
 const rand = (a,b) => a + Math.random()*(b-a);
@@ -93,7 +174,7 @@ const ease = t => t<0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2;
 function pileTop() {
   if (game.cheese <= 0) return PILE_FLOOR;
   let top = PILE_FLOOR;
-  for (let i = 0; i < game.cheese; i++) top = Math.min(top, WEDGES[i].y);
+  for (let i = 0; i < Math.min(game.cheese, MAX_CHEESE); i++) top = Math.min(top, WEDGES[i].y);
   return top;
 }
 let octoY = 0; // smoothed body y
@@ -102,28 +183,42 @@ function octoTargetY() { return pileTop() - 46; }
 // ---------- Input ----------
 window.addEventListener('keydown', e => {
   audio(); if (actx && actx.state === 'suspended') actx.resume();
-  const i = KEYS.indexOf(e.code);
-  if (i >= 0 || e.code === 'Space' || e.code === 'Enter') e.preventDefault();
-  if (e.code === 'Space' || e.code === 'Enter') {
-    if (game.state === 'title') startRound(0, 0, 8);
-    else if (game.state === 'win') {
-      if (game.round < ROUNDS.length - 1) startRound(game.round + 1, game.score, game.cheese);
-      else startRound(0, 0, 8);
-    } else if (game.state === 'lose') startRound(game.round, game.startScore, game.startCheese);
+
+  if (game.state === 'initials') {
+    e.preventDefault();
+    if (/^Key[A-Z]$/.test(e.code) && game.initials.length < 3) { game.initials += e.code.slice(3); sfx.type(); }
+    else if (e.code === 'Backspace') game.initials = game.initials.slice(0, -1);
+    else if (e.code === 'Enter' && game.initials.length > 0) {
+      game.highlight = addScore(game.initials, game.score, game.round + 1);
+      game.state = 'scores'; sfx.win();
+    }
     return;
   }
-  if (i < 0 || e.repeat) return;
-  keyDown[i] = true;
-  pressArm(i);
-});
-window.addEventListener('keyup', e => { const i = KEYS.indexOf(e.code); if (i >= 0) keyDown[i] = false; });
 
+  const k = KEYS.indexOf(e.code);
+  if (k >= 0 || e.code === 'Space' || e.code === 'Enter') e.preventDefault();
+  if (e.code === 'Space' || e.code === 'Enter') {
+    if (game.state === 'title') startRound(0, 0, START_CHEESE);
+    else if (game.state === 'win') startRound(game.round + 1, game.score, game.cheese, game.practice);
+    else if (game.state === 'lose') endGame();
+    else if (game.state === 'scores') reset();
+    return;
+  }
+  // Testing shortcut: on the title screen, 2-8 starts a practice game at that round (not saved to high scores)
+  const digit = /^Digit([2-8])$/.exec(e.code);
+  if (game.state === 'title' && digit) { startRound(+digit[1] - 1, 0, START_CHEESE, true); return; }
+  if (k < 0 || e.repeat) return;
+  keyDown[k] = true;
+  pressArm(game.doorForKey[k]);
+});
+window.addEventListener('keyup', e => { const k = KEYS.indexOf(e.code); if (k >= 0) keyDown[k] = false; });
+
+// i = door index (each arm belongs to one door)
 function pressArm(i) {
   if (game.state !== 'play') return;
   const arm = arms[i];
   // A miss tangles the whole octopus: no arm can move until it recovers
   if (arms.some(a => a.stun > 0)) return;
-  if (arm.phase !== 'idle') return;
   // Only one arm may reach at a time: the first key pressed wins, the rest are ignored
   if (arms.some(a => a.phase !== 'idle')) return;
   const m = mice.find(m => m.door === i && m.state === 'peek');
@@ -132,25 +227,44 @@ function pressArm(i) {
   arm.phase = 'out';
 }
 
+function burstFor(d, door, t) {
+  return { kind: 'mouse', door, state: 'burst', t, x: d.x, y: DOOR_BOTTOM - 30, hasCheese: false, dir: 1 };
+}
+
+function catchMouse(m, d) {
+  m.state = 'caught'; m.t = 0;
+  d.target = 0; d.slam = true; d.shake = 0.25;
+  game.score += 100; game.caught++;
+  floaters.push({ x: d.x, y: DOOR_TOP - 10, text: '+100', t: 0, color: '#ffe066' });
+  for (let k = 0; k < 10; k++) particles.push({ x: d.x + rand(-30,30), y: rand(DOOR_TOP, DOOR_BOTTOM), vx: rand(-120,120), vy: rand(-160,-20), t: 0, life: rand(0.4,0.7), color: '#fff3b0', r: rand(2,4) });
+  sfx.slam();
+  if (!cfg().endless && game.caught >= MICE_TO_WIN && !game.ending) { game.ending = 'win'; game.endT = 1.1; }
+}
+
 function armReached(i) {
-  const arm = arms[i], d = doors[i];
-  if (arm.target && arm.target.kind === 'cheese') {
+  const arm = arms[i], d = doors[i], m = arm.target;
+  if (m && m.kind === 'cat') {
+    // Stopped the cat: bonus points, doesn't count toward the 8 mice
+    m.state = 'caught'; m.t = 0;
+    d.target = 0; d.slam = true; d.shake = 0.35;
+    game.score += 200;
+    floaters.push({ x: d.x, y: DOOR_TOP - 10, text: 'CAT STOPPED! +200', t: 0, color: '#8cff9a' });
+    for (let k = 0; k < 14; k++) particles.push({ x: d.x + rand(-30,30), y: rand(DOOR_TOP, DOOR_BOTTOM), vx: rand(-150,150), vy: rand(-180,-20), t: 0, life: rand(0.4,0.8), color: '#ffb36b', r: rand(2,4) });
+    sfx.slam(); sfx.hiss();
+  } else if (m && m.kind === 'cheese') {
     // Slammed a cheese door: the cheese is lost and the octopus gets tangled
-    const m = arm.target;
     m.state = 'caught'; m.t = 0;
     d.target = 0; d.slam = true; d.shake = 0.25;
     arm.stun = STUN_TIME;
     floaters.push({ x: d.x, y: DOOR_TOP - 10, text: 'cheese lost!', t: 0, color: '#ff8a65' });
     sfx.slam(); sfx.whiff();
-  } else if (arm.target) {
-    const m = arm.target;
-    m.state = 'caught'; m.t = 0;
-    d.target = 0; d.slam = true; d.shake = 0.25;
-    game.score += 100; game.caught++;
-    floaters.push({ x: d.x, y: DOOR_TOP - 10, text: '+100', t: 0, color: '#ffe066' });
-    for (let k = 0; k < 10; k++) particles.push({ x: d.x + rand(-30,30), y: rand(DOOR_TOP, DOOR_BOTTOM), vx: rand(-120,120), vy: rand(-160,-20), t: 0, life: rand(0.4,0.7), color: '#fff3b0', r: rand(2,4) });
-    sfx.slam();
-    if (game.caught >= MICE_TO_WIN && !game.ending) { game.ending = 'win'; game.endT = 1.1; }
+  } else if (m) {
+    catchMouse(m, d);
+    if (m.kind === 'double') {
+      // The second mouse kicks the door right back open; it can't be stopped
+      mice.push(burstFor(d, i, 0));
+      floaters.push({ x: d.x, y: DOOR_TOP + 20, text: 'another one!', t: 0, color: '#ffb36b' });
+    }
   } else {
     arm.stun = STUN_TIME; d.shake = 0.2;
     floaters.push({ x: d.x, y: DOOR_TOP - 10, text: 'whiff!', t: 0, color: '#c9b8ff' });
@@ -160,9 +274,10 @@ function armReached(i) {
 }
 
 // ---------- Spawning ----------
-// "mice" holds everything that appears in a door: kind 'mouse' or kind 'cheese'
+// "mice" holds everything that appears in a door: kind 'mouse', 'double', 'cheese' or 'cat'
 const inDoor = m => m.state === 'peek' || m.state === 'grabbed';
-function activeCount() { return mice.filter(m => m.kind === 'mouse' && inDoor(m)).length; }
+const isMouse = m => m.kind === 'mouse' || m.kind === 'double';
+function activeCount() { return mice.filter(m => isMouse(m) && inDoor(m)).length; }
 function doorsInUse() { return mice.filter(inDoor).length; }
 
 function trySpawn() {
@@ -171,18 +286,39 @@ function trySpawn() {
   const i = free[Math.floor(Math.random()*free.length)];
   const c = cfg();
   const win = Math.max(c.windowMin, c.window0 - game.spawned * c.windowStep);
-  const isCheese = game.spawned > 0 && Math.random() < c.cheeseChance;
-  if (isCheese) {
+  // Pick what's behind the door. The first door is always a mouse; no cat on the first two doors; one cat at a time.
+  let kind = 'mouse';
+  const r = Math.random();
+  if (game.spawned > 0) {
+    if (r < c.catChance) kind = (game.spawned > 1 && !mice.some(m => m.kind === 'cat')) ? 'cat' : 'mouse';
+    else if (r < c.catChance + c.cheeseChance) kind = 'cheese';
+    else if (r < c.catChance + c.cheeseChance + c.doubleChance) kind = 'double';
+  }
+  if (kind === 'cat') {
+    mice.push({ kind: 'cat', door: i, state: 'peek', timer: c.catWindow, window: c.catWindow, t: 0 });
+    sfx.creak(); setTimeout(sfx.meow, 120);
+  } else if (kind === 'cheese') {
     const cw = win * 1.25;
     mice.push({ kind: 'cheese', door: i, state: 'peek', timer: cw, window: cw, t: 0 });
     sfx.creak(); setTimeout(sfx.twinkle, 120);
   } else {
-    mice.push({ kind: 'mouse', door: i, state: 'peek', timer: win, window: win, t: 0, x: DOOR_X[i], y: DOOR_BOTTOM - 30, hasCheese: false, dir: 1 });
+    mice.push({ kind, door: i, state: 'peek', timer: win, window: win, t: 0, x: DOOR_X[i], y: DOOR_BOTTOM - 30, hasCheese: false, dir: 1 });
     game.spawned++;
     sfx.creak(); setTimeout(sfx.squeak, 120);
+    if (kind === 'double') setTimeout(sfx.squeak, 220);
   }
   doors[i].busy = true; doors[i].target = 1; doors[i].slam = false;
   return true;
+}
+
+function startRun(m, d) {
+  m.kind = 'mouse'; m.state = 'run'; m.t = 0;
+  m.sx = d.x; m.sy = DOOR_BOTTOM - 14; m.x = m.sx; m.y = m.sy;
+  const w = WEDGES[Math.max(0, Math.min(game.cheese, MAX_CHEESE) - 1)];
+  m.tx = w.x + (d.x < PILE_X ? -20 : 20); m.ty = w.y + WEDGE_H*0.5;
+  m.dir = m.tx > m.sx ? 1 : -1;
+  d.closeDelay = 0.35;
+  sfx.squeak();
 }
 
 // ---------- Update ----------
@@ -195,8 +331,8 @@ function update(dt) {
 
   if (game.state === 'play') {
     const c = cfg();
-    const maxActive = game.spawned < c.doubleAfter ? 1 : 2;
-    if (!game.ending && doorsInUse() < maxActive && game.caught + activeCount() < MICE_TO_WIN) {
+    const maxActive = game.spawned < c.twoDoorsAfter ? 1 : 2;
+    if (!game.ending && doorsInUse() < maxActive && (c.endless || game.caught + activeCount() < MICE_TO_WIN)) {
       game.spawnTimer -= dt;
       if (game.spawnTimer <= 0 && trySpawn()) game.spawnTimer = rand(c.gap[0], c.gap[1]) - Math.min(0.3, game.spawned*0.02);
     }
@@ -218,38 +354,64 @@ function update(dt) {
   });
 
   // doors
-  doors.forEach(d => {
+  doors.forEach((d, idx) => {
     if (d.closeDelay > 0) { d.closeDelay -= dt; if (d.closeDelay <= 0) d.target = 0; }
-    const speed = d.target > d.open ? 6 : (d.slam ? 16 : 4);
+    const speed = d.target > d.open ? (d.bang ? 14 : 6) : (d.slam ? 16 : 4);
     if (d.open < d.target) d.open = Math.min(d.target, d.open + speed*dt);
     else if (d.open > d.target) d.open = Math.max(d.target, d.open - speed*dt);
     if (d.shake > 0) d.shake -= dt;
-    if (d.busy && d.target === 0 && d.open === 0 && d.closeDelay <= 0 && !mice.some(m => m.door === doors.indexOf(d) && (m.state === 'peek' || m.state === 'grabbed'))) d.busy = false;
+    if (d.busy && d.target === 0 && d.open === 0 && d.closeDelay <= 0 &&
+        !mice.some(m => m.door === idx && (inDoor(m) || m.state === 'burst'))) { d.busy = false; d.bang = false; }
   });
 
-  // mice
+  // mice (and everything else behind doors)
+  const born = [];
   for (const m of mice) {
     const d = doors[m.door];
     if (m.state === 'peek') {
       if (game.state === 'play' && !game.ending) m.timer -= dt;
-      if (m.timer <= 0 && m.kind === 'cheese') {
+      if (m.timer > 0) continue;
+      if (m.kind === 'cat') {
+        // Cat wasn't stopped: it pounces on the pile and the game is over
+        m.state = 'pounce'; m.t = 0;
+        m.sx = d.x; m.sy = DOOR_BOTTOM - 40; m.tx = PILE_X; m.ty = pileTop() - 30;
+        m.x = m.sx; m.y = m.sy; m.s = 1;
+        d.closeDelay = 0.5;
+        game.ending = 'lose'; game.endT = 2.2; game.loseReason = 'cat';
+        sfx.meow();
+      } else if (m.kind === 'cheese') {
         // Left open: the cheese flies onto the pile
-        const slot = Math.min(7, game.cheese + mice.filter(o => o.state === 'fly').length);
+        const slot = Math.min(MAX_CHEESE - 1, game.cheese + mice.filter(o => o.state === 'fly').length);
         m.state = 'fly'; m.t = 0;
         m.sx = d.x; m.sy = DOOR_BOTTOM - 50; m.tx = WEDGES[slot].x; m.ty = WEDGES[slot].y;
         m.x = m.sx; m.y = m.sy;
         d.closeDelay = 0.3;
-      } else if (m.timer <= 0) {
-        m.state = 'run'; m.t = 0;
-        m.sx = d.x; m.sy = DOOR_BOTTOM - 14;
-        const w = WEDGES[Math.max(0, game.cheese - 1)];
-        m.tx = w.x + (d.x < PILE_X ? -20 : 20); m.ty = w.y + WEDGE_H*0.5;
-        m.dir = m.tx > m.sx ? 1 : -1;
-        d.closeDelay = 0.35;
-        sfx.squeak();
+      } else {
+        // Too slow: the mouse (and its twin, if it's a double) runs for the cheese
+        if (m.kind === 'double') born.push(burstFor(d, m.door, 0.12));
+        startRun(m, d);
       }
+    } else if (m.state === 'burst') {
+      // Second mouse of a double: bangs the door open and runs a moment later
+      m.t += dt;
+      if (m.t >= 0.12 && d.target !== 1) { d.target = 1; d.slam = false; d.bang = true; d.closeDelay = 0; d.shake = 0.25; sfx.bang(); }
+      if (m.t >= 0.34) startRun(m, d);
     } else if (m.state === 'caught') {
       m.t += dt; if (m.t > 0.5) m.dead = true;
+    } else if (m.state === 'pounce') {
+      m.t += dt / 0.55;
+      const k = Math.min(1, m.t);
+      m.x = lerp(m.sx, m.tx, k); m.y = lerp(m.sy, m.ty, k) - Math.sin(k*Math.PI)*140; m.s = 1 + k*0.6;
+      if (m.t >= 1) {
+        for (let w = 0; w < Math.min(game.cheese, MAX_CHEESE); w++) for (let k2 = 0; k2 < 6; k2++)
+          particles.push({ x: WEDGES[w].x, y: WEDGES[w].y + 10, vx: rand(-200,200), vy: rand(-260,-60), t: 0, life: rand(0.6,1.1), color: '#ffc93c', r: rand(2,5) });
+        game.cheese = 0;
+        floaters.push({ x: PILE_X, y: m.ty - 70, text: 'CHOMP!', t: 0, color: '#ff8a65' });
+        sfx.chomp();
+        m.state = 'sit';
+      }
+    } else if (m.state === 'sit') {
+      m.y = lerp(m.y, PILE_FLOOR - 60, Math.min(1, dt*6));
     } else if (m.state === 'fly') {
       m.t += dt / 0.7;
       const k = Math.min(1, m.t);
@@ -257,7 +419,7 @@ function update(dt) {
       if (m.t >= 1) {
         m.dead = true;
         if (game.ending !== 'lose') {
-          if (game.cheese < 8) {
+          if (game.cheese < MAX_CHEESE) {
             game.cheese++;
             floaters.push({ x: m.tx, y: m.ty - 10, text: '+1 cheese', t: 0, color: '#8cff9a' });
           } else {
@@ -274,7 +436,7 @@ function update(dt) {
       m.x = lerp(m.sx, m.tx, k); m.y = lerp(m.sy, m.ty, k) - Math.abs(Math.sin(k*Math.PI*4))*8;
       if (m.t >= 1) {
         if (game.cheese > 0) {
-          const w = WEDGES[game.cheese - 1];
+          const w = WEDGES[Math.min(game.cheese, MAX_CHEESE) - 1];
           game.cheese--; m.hasCheese = true;
           for (let k2 = 0; k2 < 12; k2++) particles.push({ x: w.x, y: w.y + 10, vx: rand(-150,150), vy: rand(-220,-40), t: 0, life: rand(0.5,0.9), color: '#ffc93c', r: rand(2,4) });
           floaters.push({ x: w.x, y: w.y - 10, text: '-1 cheese', t: 0, color: '#ff8a65' });
@@ -288,7 +450,7 @@ function update(dt) {
       if (m.x < -60 || m.x > W + 60) m.dead = true;
     }
   }
-  mice = mice.filter(m => !m.dead);
+  mice = mice.filter(m => !m.dead).concat(born);
 
   floaters.forEach(f => f.t += dt); floaters = floaters.filter(f => f.t < 1);
   particles.forEach(p => { p.t += dt; p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 600*dt; });
@@ -334,16 +496,23 @@ function drawDoor(i) {
   ctx.fillStyle = '#120a0e';
   roundRect(x, y, DOOR_W, DOOR_H, [34,34,0,0]); ctx.fill();
 
-  // mouse inside
-  const m = mice.find(m => m.door === i && (m.state === 'peek' || m.state === 'grabbed' || m.state === 'caught'));
+  // whatever is behind the door
+  const m = mice.find(m => m.door === i && m.state === 'burst') ||
+            mice.find(m => m.door === i && (m.state === 'peek' || m.state === 'grabbed' || m.state === 'caught'));
   if (m && d.open > 0.05) {
     ctx.save();
     roundRect(x, y, DOOR_W, DOOR_H, [34,34,0,0]); ctx.clip();
-    const urgency = m.state === 'peek' ? 1 - m.timer / m.window : 0;
+    const urgency = m.state === 'peek' ? 1 - m.timer / m.window : (m.state === 'burst' ? 1 : 0);
     const jitter = m.state === 'grabbed' ? rand(-2,2) : (urgency > 0.6 ? Math.sin(game.time*50)*1.5 : 0);
     const squash = m.state === 'caught' ? Math.max(0.2, 1 - m.t*2) : 1;
-    if (m.kind === 'cheese') drawCheeseInDoor(d.x + sx + jitter, squash);
-    else drawMouseFront(d.x + sx + jitter, DOOR_BOTTOM - 38, 1, urgency, squash, m.state);
+    const cx = d.x + sx + jitter;
+    if (m.kind === 'cheese') drawCheeseInDoor(cx, squash);
+    else if (m.kind === 'cat') drawCatFront(cx, DOOR_BOTTOM - 40, 1, squash, m.state, urgency);
+    else if (m.kind === 'double') {
+      drawMouseFront(cx - 15, DOOR_BOTTOM - 34, 0.74, urgency, squash, m.state);
+      drawMouseFront(cx + 15, DOOR_BOTTOM - 26, 0.74, urgency, squash, m.state);
+    }
+    else drawMouseFront(cx, DOOR_BOTTOM - 38, 1, urgency, squash, m.state === 'burst' ? 'peek' : m.state);
     ctx.restore();
   }
 
@@ -367,14 +536,19 @@ function drawDoor(i) {
     ctx.beginPath(); ctx.arc(x + pw*0.82, y + DOOR_H*0.58, 5, 0, Math.PI*2); ctx.fill();
   }
 
-  // timer ring when a mouse is peeking
+  // timer ring while something is waiting in the door
   if (m && m.state === 'peek') {
     const frac = Math.max(0, m.timer / m.window);
     const cx = d.x, cy = DOOR_TOP - 26;
     ctx.lineWidth = 6; ctx.strokeStyle = '#00000055';
     ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI*2); ctx.stroke();
-    ctx.strokeStyle = m.kind === 'cheese' ? '#ffd95e' : `hsl(${frac*120},85%,55%)`;
+    ctx.strokeStyle = m.kind === 'cheese' ? '#ffd95e' : m.kind === 'cat' ? '#ff4d6d' : `hsl(${frac*120},85%,55%)`;
     ctx.beginPath(); ctx.arc(cx, cy, 13, -Math.PI/2, -Math.PI/2 + frac*Math.PI*2); ctx.stroke();
+    if (m.kind === 'double') {
+      ctx.font = 'bold 16px Trebuchet MS'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffb36b'; ctx.fillText('×2', cx + 20, cy);
+      ctx.textBaseline = 'alphabetic';
+    }
   }
 }
 
@@ -411,6 +585,52 @@ function drawMouseFront(x, y, s, urgency, squash, state) {
     ctx.fillStyle = '#ff5252'; ctx.font = 'bold 22px Trebuchet MS'; ctx.textAlign = 'center';
     ctx.fillText('!', 26, -30);
   }
+  ctx.restore();
+}
+
+function drawCatFront(x, y, s, squash, state, urgency) {
+  ctx.save(); ctx.translate(x, y + (1-squash)*30); ctx.scale(s, s*squash);
+  const fur = '#f0913a', dark = '#c4651c';
+  // body
+  ctx.fillStyle = fur; ctx.beginPath(); ctx.ellipse(0, 26, 24, 20, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ffe1c2'; ctx.beginPath(); ctx.ellipse(0, 30, 12, 13, 0, 0, Math.PI*2); ctx.fill();
+  // ears
+  for (const sg of [-1, 1]) {
+    ctx.fillStyle = fur; ctx.beginPath(); ctx.moveTo(sg*26, -10); ctx.lineTo(sg*22, -40); ctx.lineTo(sg*4, -24); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#f7a8b8'; ctx.beginPath(); ctx.moveTo(sg*21, -15); ctx.lineTo(sg*19, -32); ctx.lineTo(sg*9, -23); ctx.closePath(); ctx.fill();
+  }
+  // head
+  ctx.fillStyle = fur; ctx.beginPath(); ctx.ellipse(0, -6, 28, 23, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = dark; ctx.lineWidth = 3;
+  for (const dx of [-7, 0, 7]) { ctx.beginPath(); ctx.moveTo(dx, -28); ctx.lineTo(dx, -20); ctx.stroke(); }
+  // eyes
+  const stopped = state === 'caught' || state === 'grabbed';
+  if (stopped) {
+    ctx.strokeStyle = '#2b1a24'; ctx.lineWidth = 2.5;
+    for (const ex of [-11, 11]) { ctx.beginPath(); ctx.moveTo(ex-5,-13); ctx.lineTo(ex+5,-5); ctx.moveTo(ex+5,-13); ctx.lineTo(ex-5,-5); ctx.stroke(); }
+  } else {
+    for (const ex of [-11, 11]) {
+      ctx.fillStyle = '#a6f06a'; ctx.beginPath(); ctx.ellipse(ex, -9, 7, 6, 0, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.ellipse(ex, -9, 1.6 + urgency*1.5, 5.5, 0, 0, Math.PI*2); ctx.fill();
+    }
+    // narrowed, sneaky brows
+    ctx.strokeStyle = dark; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-19, -18); ctx.lineTo(-5, -14); ctx.moveTo(19, -18); ctx.lineTo(5, -14); ctx.stroke();
+  }
+  // nose, mouth, whiskers
+  ctx.fillStyle = '#e9778f'; ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(4, 0); ctx.lineTo(0, 4); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#5a2a10'; ctx.lineWidth = 1.8;
+  if (state === 'sit' || state === 'pounce') {
+    ctx.fillStyle = '#5a1a20'; ctx.beginPath(); ctx.ellipse(0, 10, 9, 6 + Math.abs(Math.sin(game.time*14))*3, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(-6, 6); ctx.lineTo(-4, 10); ctx.lineTo(-2, 6); ctx.moveTo(6, 6); ctx.lineTo(4, 10); ctx.lineTo(2, 6); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.arc(-4, 5, 4, 0, Math.PI); ctx.arc(4, 5, 4, 0, Math.PI); ctx.stroke();
+  }
+  ctx.strokeStyle = '#fff6'; ctx.lineWidth = 1;
+  for (const sg of [-1, 1]) for (const dy of [-2, 2, 6]) { ctx.beginPath(); ctx.moveTo(sg*8, 3); ctx.lineTo(sg*32, dy*1.5); ctx.stroke(); }
+  // paws
+  ctx.fillStyle = '#ffe1c2';
+  ctx.beginPath(); ctx.ellipse(-12, 42, 7, 5, 0, 0, Math.PI*2); ctx.ellipse(12, 42, 7, 5, 0, 0, Math.PI*2); ctx.fill();
   ctx.restore();
 }
 
@@ -467,8 +687,8 @@ function drawWedge(x, y, w, h) {
 function drawPile() {
   // shadow
   ctx.fillStyle = '#00000033';
-  ctx.beginPath(); ctx.ellipse(PILE_X, PILE_FLOOR + 4, 170, 10, 0, 0, Math.PI*2); ctx.fill();
-  for (let i = 0; i < game.cheese; i++) { const w = WEDGES[i]; drawWedge(w.x, w.y, WEDGE_W, WEDGE_H); }
+  ctx.beginPath(); ctx.ellipse(PILE_X, PILE_FLOOR + 4, 200, 10, 0, 0, Math.PI*2); ctx.fill();
+  for (let i = 0; i < Math.min(game.cheese, MAX_CHEESE); i++) { const w = WEDGES[i]; drawWedge(w.x, w.y, WEDGE_W, WEDGE_H); }
 }
 
 function tentacle(ax, ay, cx, cy, tx, ty, w, color, dark, stunned) {
@@ -493,11 +713,11 @@ function tentacle(ax, ay, cx, cy, tx, ty, w, color, dark, stunned) {
 function drawOctopus() {
   const cx = PILE_X, cy = octoY;
   // which door to look at
-  const tgt = mice.find(m => m.kind === 'mouse' && m.state === 'peek') || mice.find(m => m.state === 'run' || m.state === 'flee');
+  const tgt = mice.find(m => m.kind === 'cat' && m.state !== 'caught') || mice.find(m => isMouse(m) && m.state === 'peek') || mice.find(m => m.state === 'run' || m.state === 'flee');
   let lookX = 0, lookY = 0;
   if (tgt) { const tx = tgt.state === 'peek' ? DOOR_X[tgt.door] : tgt.x, ty = tgt.state === 'peek' ? DOOR_TOP + 60 : tgt.y; const a = Math.atan2(ty - cy, tx - cx); lookX = Math.cos(a)*4; lookY = Math.sin(a)*4; }
 
-  // arms
+  // arms (arm i always belongs to door i)
   const order = [0,7,1,6,2,5,3,4]; // draw outer arms first
   for (const i of order) {
     const a = arms[i];
@@ -511,7 +731,7 @@ function drawOctopus() {
     const ecx = (ax + ex)/2 + side*(30 + rank*10), ecy = (ay + ey)/2 + 60;
     const e = ease(a.ext);
     const stunned = a.stun > 0;
-    const color = stunned ? '#8f5fb8' : (keyDown[i] ? '#d48cff' : '#b670e8');
+    const color = stunned ? '#8f5fb8' : (keyDown[game.keyForDoor[i]] ? '#d48cff' : '#b670e8');
     tentacle(ax, ay, lerp(rcx, ecx, e), lerp(rcy, ecy, e), lerp(rx, ex, e), lerp(ry, ey, e), 13, color, '#5d2f86', stunned && a.ext === 0);
     if (stunned && a.ext === 0) {
       for (let s = 0; s < 3; s++) {
@@ -561,13 +781,20 @@ function star(x, y, r) {
 }
 
 function drawKeycaps() {
+  // Flash the keycaps while a round with a new key layout is starting
+  const flash = game.state === 'ready' && cfg().newMapping;
   for (let i = 0; i < 8; i++) {
-    const x = DOOR_X[i], y = DOOR_BOTTOM + 16, down = keyDown[i];
+    const key = game.keyForDoor[i];
+    const x = DOOR_X[i], y = DOOR_BOTTOM + 16, down = keyDown[key];
+    if (flash) {
+      ctx.strokeStyle = `rgba(255,224,102,${0.5 + 0.5*Math.sin(game.time*10)})`; ctx.lineWidth = 4;
+      roundRect(x - 24, y - 5, 48, 46, 10); ctx.stroke();
+    }
     ctx.fillStyle = '#2b1a24'; roundRect(x - 19, y + 3, 38, 34, 7); ctx.fill();
     ctx.fillStyle = down ? '#ffe066' : (arms.some(a => a.stun > 0) ? '#9b8aa8' : '#f3e9dc');
     roundRect(x - 19, y + (down ? 3 : 0), 38, 32, 7); ctx.fill();
     ctx.fillStyle = '#2b1a24'; ctx.font = 'bold 20px Trebuchet MS'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(LABELS[i], x, y + 17 + (down ? 3 : 0));
+    ctx.fillText(LABELS[key], x, y + 17 + (down ? 3 : 0));
   }
   ctx.textBaseline = 'alphabetic';
 }
@@ -577,14 +804,20 @@ function drawHUD() {
   ctx.fillStyle = '#ffe9c7'; ctx.font = 'bold 22px Trebuchet MS'; ctx.textAlign = 'left';
   ctx.fillText('SCORE ' + String(game.score).padStart(4, '0'), 20, 26);
   ctx.textAlign = 'center'; ctx.font = 'bold 16px Trebuchet MS'; ctx.fillStyle = '#d8c2d0';
-  ctx.fillText('ROUND ' + (game.round + 1), W/2, 26);
+  const endless = cfg().endless;
+  ctx.fillText((endless ? 'FINAL ROUND' : 'ROUND ' + (game.round + 1)) + (game.practice ? '  (PRACTICE)' : ''), W/2, 26);
   // mice caught
   ctx.textAlign = 'right'; ctx.fillStyle = '#ffe9c7'; ctx.font = 'bold 16px Trebuchet MS';
   ctx.fillText('MICE', 690, 26);
-  for (let k = 0; k < MICE_TO_WIN; k++) {
-    ctx.fillStyle = k < game.caught ? '#9aa0aa' : '#ffffff22';
-    const x = 712 + k*22;
-    ctx.beginPath(); ctx.arc(x, 28, 7, 0, Math.PI*2); ctx.arc(x - 6, 21, 4, 0, Math.PI*2); ctx.arc(x + 6, 21, 4, 0, Math.PI*2); ctx.fill();
+  if (endless) {
+    ctx.textAlign = 'left'; ctx.font = 'bold 20px Trebuchet MS';
+    ctx.fillText('× ' + game.caught, 704, 26);
+  } else {
+    for (let k = 0; k < MICE_TO_WIN; k++) {
+      ctx.fillStyle = k < game.caught ? '#9aa0aa' : '#ffffff22';
+      const x = 712 + k*22;
+      ctx.beginPath(); ctx.arc(x, 28, 7, 0, Math.PI*2); ctx.arc(x - 6, 21, 4, 0, Math.PI*2); ctx.arc(x + 6, 21, 4, 0, Math.PI*2); ctx.fill();
+    }
   }
   // cheese counter
   ctx.save(); ctx.translate(250, 18); drawWedge(0, 0, 30, 16); ctx.restore();
@@ -593,19 +826,71 @@ function drawHUD() {
   ctx.textBaseline = 'alphabetic';
 }
 
-function panel(lines, sub) {
+function panel(lines, sub, startY = 170) {
   ctx.fillStyle = '#1b1020cc'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center';
-  let y = 170;
+  let y = startY;
   for (const [text, size, color] of lines) {
     ctx.font = `bold ${size}px Trebuchet MS`; ctx.fillStyle = color;
     ctx.fillText(text, W/2, y); y += size * 1.35;
   }
-  if (sub) {
-    ctx.globalAlpha = 0.6 + 0.4*Math.sin(game.time*4);
-    ctx.font = 'bold 24px Trebuchet MS'; ctx.fillStyle = '#ffe066';
-    ctx.fillText(sub, W/2, y + 20); ctx.globalAlpha = 1;
+  if (sub) prompt(sub, y + 20);
+}
+
+function prompt(text, y) {
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = 0.6 + 0.4*Math.sin(game.time*4);
+  ctx.font = 'bold 24px Trebuchet MS'; ctx.fillStyle = '#ffe066';
+  ctx.fillText(text, W/2, y); ctx.globalAlpha = 1;
+}
+
+function drawInitials() {
+  panel([
+    ['NEW HIGH SCORE!', 56, '#8cff9a'],
+    [`Score ${game.score}  —  reached ${cfg().endless ? 'the final round' : 'Round ' + (game.round + 1)}`, 26, '#ffe9c7'],
+    ['Type your initials:', 24, '#d8c2d0'],
+  ], null, 150);
+  for (let k = 0; k < 3; k++) {
+    const x = W/2 - 105 + k*75, y = 300;
+    ctx.fillStyle = '#2b1a24'; roundRect(x, y, 60, 74, 10); ctx.fill();
+    const active = k === game.initials.length;
+    ctx.strokeStyle = active && Math.sin(game.time*8) > 0 ? '#ffe066' : '#6d5466'; ctx.lineWidth = 3;
+    roundRect(x, y, 60, 74, 10); ctx.stroke();
+    ctx.fillStyle = '#ffe9c7'; ctx.font = 'bold 46px Trebuchet MS'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(game.initials[k] || '', x + 30, y + 40);
+    ctx.textBaseline = 'alphabetic';
   }
+  ctx.font = '18px Trebuchet MS'; ctx.fillStyle = '#d8c2d0';
+  ctx.fillText('Letters only  ·  Backspace to fix', W/2, 420);
+  if (game.initials.length) prompt('Press ENTER to save', 470);
+}
+
+function drawScores() {
+  ctx.fillStyle = '#1b1020e6'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.font = 'bold 44px Trebuchet MS'; ctx.fillStyle = '#ffd95e';
+  ctx.fillText('HIGH SCORES', W/2, 80);
+  const list = loadScores();
+  ctx.font = 'bold 14px Trebuchet MS'; ctx.fillStyle = '#a18a9a';
+  ctx.textAlign = 'right'; ctx.fillText('RANK', 360, 112); ctx.fillText('SCORE', 640, 112);
+  ctx.textAlign = 'left'; ctx.fillText('NAME', 390, 112); ctx.fillText('ROUND', 670, 112);
+  if (!list.length) {
+    ctx.textAlign = 'center'; ctx.font = '22px Trebuchet MS'; ctx.fillStyle = '#d8c2d0';
+    ctx.fillText('No scores yet. Be the first!', W/2, 200);
+  }
+  list.forEach((s, n) => {
+    const y = 144 + n * 33;
+    if (n === game.highlight) { ctx.fillStyle = '#ffe06633'; roundRect(300, y - 23, 440, 31, 6); ctx.fill(); }
+    ctx.fillStyle = n === game.highlight ? '#ffe066' : '#f3e9dc';
+    ctx.font = 'bold 22px Trebuchet MS';
+    ctx.textAlign = 'right'; ctx.fillText((n + 1) + '.', 360, y); ctx.fillText(String(s.score), 640, y);
+    ctx.textAlign = 'left'; ctx.fillText(s.initials, 390, y); ctx.fillText(s.round >= ROUNDS.length ? 'FINAL' : String(s.round), 670, y);
+  });
+  ctx.textAlign = 'center'; ctx.font = 'bold 22px Trebuchet MS';
+  if (game.highlight < 0) {
+    ctx.fillStyle = '#ffb199';
+    ctx.fillText(game.practice ? `Practice game: ${game.score} (practice scores aren't saved)` : `Your score: ${game.score}`, W/2, 500);
+  }
+  prompt('Press SPACE for the title screen', 555);
 }
 
 function draw() {
@@ -617,6 +902,7 @@ function draw() {
   drawOctopus();
   for (const m of mice) if (m.state === 'run' || m.state === 'flee') drawMouseSide(m.x, m.y, m.dir, m.hasCheese);
   for (const m of mice) if (m.state === 'fly') drawWedge(m.x, m.y, WEDGE_W, WEDGE_H);
+  for (const m of mice) if (m.state === 'pounce' || m.state === 'sit') drawCatFront(m.x, m.y, m.s, 1, m.state, 1);
   for (const p of particles) { ctx.globalAlpha = 1 - p.t/p.life; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill(); }
   ctx.globalAlpha = 1;
   ctx.textAlign = 'center';
@@ -634,32 +920,41 @@ function draw() {
       ['Mice are after the octopus\'s cheese!', 24, '#f3e9dc'],
       ['Each home-row key sends one arm to slam its door:', 22, '#d8c2d0'],
       ['A  S  D  F        J  K  L  ;', 30, '#ffe9c7'],
-      ['Catch 8 mice to win (100 pts each). Lose all 8 cheese and you lose.', 20, '#d8c2d0'],
-      ['Only one arm can reach at a time, and a miss leaves the octopus tangled.', 20, '#c9b8ff'],
+      ['Catch 8 mice to clear a round (100 pts each). Run out of cheese and it\'s game over.', 19, '#d8c2d0'],
+      ['Only one arm can reach at a time, and a miss leaves the octopus tangled.', 19, '#c9b8ff'],
+      ['Survive 7 rounds, then see how long you can last in the final round!', 19, '#8cff9a'],
     ], 'Press SPACE to start');
+    ctx.font = '14px Trebuchet MS'; ctx.fillStyle = '#ffffff55';
+    ctx.fillText('(testing: press 2–8 to practice from that round; practice scores aren\'t saved)', W/2, H - 16);
   } else if (game.state === 'ready') {
-    const label = game.readyT > 0.6 ? 'ROUND ' + (game.round + 1) : 'GO!';
-    if (game.round === 1 && game.readyT > 0.6) {
-      ctx.fillStyle = '#1b1020bb'; roundRect(170, 300, 660, 150, 16); ctx.fill();
+    const label = game.readyT > 0.6 ? (cfg().endless ? 'FINAL ROUND' : 'ROUND ' + (game.round + 1)) : 'GO!';
+    const intro = cfg().intro;
+    if (intro.length && game.readyT > 0.6) {
+      ctx.fillStyle = '#1b1020bb'; roundRect(150, 310, 700, 150, 16); ctx.fill();
       ctx.textAlign = 'center'; ctx.font = 'bold 22px Trebuchet MS';
-      ctx.fillStyle = '#ffe9c7'; ctx.fillText('The mice are faster now!', W/2, 405);
-      ctx.fillStyle = '#ffd95e'; ctx.fillText('Some doors hide CHEESE. Leave those OPEN to win it back.', W/2, 435);
+      intro.forEach(([text, color], n) => { ctx.fillStyle = color; ctx.fillText(text, W/2, 415 + n*30); });
     }
     ctx.textAlign = 'center'; ctx.font = 'bold 60px Trebuchet MS';
-    ctx.fillStyle = '#000a'; ctx.fillText(label, W/2 + 3, 373);
-    ctx.fillStyle = '#ffe066'; ctx.fillText(label, W/2, 370);
+    ctx.fillStyle = '#000a'; ctx.fillText(label, W/2 + 3, 383);
+    ctx.fillStyle = '#ffe066'; ctx.fillText(label, W/2, 380);
   } else if (game.state === 'win') {
-    const last = game.round === ROUNDS.length - 1;
     panel([
-      [last ? 'YOU SAVED THE CHEESE!' : `ROUND ${game.round + 1} CLEAR!`, 56, '#8cff9a'],
+      [`ROUND ${game.round + 1} CLEAR!`, 56, '#8cff9a'],
       [`All ${MICE_TO_WIN} mice caught  —  Score ${game.score}`, 28, '#ffe9c7'],
-      [`Cheese saved: ${game.cheese} / 8`, 24, '#ffd95e'],
-    ], last ? 'Press SPACE to play again' : `Press SPACE for Round ${game.round + 2}`);
+      [`Cheese in the pile: ${game.cheese}`, 24, '#ffd95e'],
+    ], ROUNDS[game.round + 1].endless ? 'Press SPACE for the FINAL ROUND' : `Press SPACE for Round ${game.round + 2}`);
   } else if (game.state === 'lose') {
+    const endless = cfg().endless;
     panel([
-      ['THE MICE GOT THE CHEESE', 50, '#ff8a65'],
-      [`Mice caught: ${game.caught} / ${MICE_TO_WIN}  —  Score ${game.score}`, 28, '#ffe9c7'],
-    ], `Press SPACE to retry Round ${game.round + 1}`);
+      ['GAME OVER', 60, '#ff8a65'],
+      [game.loseReason === 'cat' ? 'The cat ate all the cheese!' : 'The mice got all the cheese!', 30, '#ffb199'],
+      [endless ? `You stopped ${game.caught} mice in the final round` : `You reached Round ${game.round + 1}`, 26, '#ffe9c7'],
+      [`Final score: ${game.score}`, 30, '#ffd95e'],
+    ], 'Press SPACE to continue');
+  } else if (game.state === 'initials') {
+    drawInitials();
+  } else if (game.state === 'scores') {
+    drawScores();
   }
 }
 
